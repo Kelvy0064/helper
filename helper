@@ -1,1 +1,286 @@
+package br.com.santander.BUS.strategy.addmovement.create;
+
+import static br.com.santander.BUS.constant.ResponseMessage.OPERATION_CREATED;
+
+import br.com.santander.BUS.enums.ChannelCodeEnum;
+import br.com.santander.BUS.enums.DealingOperationStatusEnum;
+import br.com.santander.BUS.enums.operation.status.LevelEnum;
+import br.com.santander.BUS.enums.operation.status.SystemEnum;
+import br.com.santander.BUS.error.OperationErrorCode;
+import br.com.santander.BUS.model.CamundaOperationHeader;
+import br.com.santander.BUS.model.CamundaOperationStatus;
+import br.com.santander.BUS.model.CamundaOperationTrade;
+import br.com.santander.BUS.model.Client;
+import br.com.santander.BUS.model.ClientInfo;
+import br.com.santander.BUS.model.DealingOperation;
+import br.com.santander.BUS.model.DealingOperationContent;
+import br.com.santander.BUS.model.DealingOperationEventType;
+import br.com.santander.BUS.model.User;
+import br.com.santander.BUS.model.dto.CamundaOperationRequestDTO;
+import br.com.santander.BUS.model.dto.MurexStepResponseDTO;
+import br.com.santander.BUS.model.dto.ResponseDTO;
+import br.com.santander.BUS.service.ClientInfoService;
+import br.com.santander.BUS.service.DealingOperationService;
+import br.com.santander.BUS.service.UserService;
+import br.com.santander.BUS.strategy.addmovement.AddMovementJourneyStrategy;
+import br.com.santander.BUS.utils.DealingOperationUtils;
+import br.com.santander.ars.error.exceptions.BusinessException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import java.util.Optional;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+
+@Slf4j
+@RequiredArgsConstructor
+public abstract class AddMovementCreateBasicJourney implements AddMovementJourneyStrategy {
+
+  protected final ClientInfoService clientInfoService;
+
+  protected final UserService userService;
+
+  protected final DealingOperationService dealingOperationService;
+
+  public ResponseEntity<ResponseDTO<DealingOperation>> executeJourney(
+      CamundaOperationRequestDTO requestBody, DealingOperationEventType eventType) {
+    DealingOperation savedDealingOperation = generateOperation(requestBody, eventType);
+    return ResponseEntity.ok(
+        new ResponseDTO<>(HttpStatus.OK.value(), OPERATION_CREATED, savedDealingOperation));
+  }
+
+  protected DealingOperation generateOperation(
+      CamundaOperationRequestDTO requestBody, DealingOperationEventType eventType) {
+    List<String> errors = new ArrayList<>();
+    CamundaOperationTrade trade = requestBody.getTrade();
+    CamundaOperationHeader header = requestBody.getHeader();
+    CamundaOperationStatus camundaStatus = requestBody.getStatus();
+    Optional<MurexStepResponseDTO> murexDTO = requestBody.getMurex();
+    Optional<ClientInfo> clientInfo = getClientInfo(requestBody.getClient());
+    int productId = getProductId(requestBody.getHeader());
+    Optional<User> user = getUserOrCreate(trade);
+    Date transactionDate = getTransactionDate();
+    ChannelCodeEnum channel = getChannelCode(requestBody.getHeader());
+
+    DealingOperation newDealingOperation =
+        buildNewOperation(eventType, header, user, clientInfo, productId, transactionDate, channel);
+
+    checksIfErrorExceedsSizeLimit(camundaStatus);
+    DealingOperationContent dealingOperationContent =
+        generateOperationContent(trade, header, murexDTO);
+    newDealingOperation.setContent(dealingOperationContent);
+    verifyFirstStep(
+        requestBody, camundaStatus, dealingOperationContent, newDealingOperation, errors);
+    generateOperationContentByOperationType(newDealingOperation, requestBody);
+    saveOperation(newDealingOperation);
+
+    return newDealingOperation;
+  }
+
+  protected Optional<ClientInfo> getClientInfo(Client client) {
+    if (client.getDocument().isBlank()) {
+      throw new BusinessException(OperationErrorCode.BLANK_DOCUMENT_FIELD);
+    }
+    if (client.getCustomerId().isBlank()) {
+      throw new BusinessException(OperationErrorCode.BLANK_PENUMPER_FIELD);
+    }
+    String document = client.getDocument();
+    Optional<ClientInfo> clientInfo = clientInfoService.findByDocumentNumber(document);
+
+    if (clientInfo.isEmpty()) {
+      ClientInfo newClient = clientInfoService.create(document);
+      clientInfo = Optional.of(newClient);
+    }
+
+    return clientInfo;
+  }
+
+  protected Integer getProductId(CamundaOperationHeader header) {
+    return Integer.valueOf(header.getProductId());
+  }
+
+  protected Date getTransactionDate() {
+    return new Date();
+  }
+
+  protected ChannelCodeEnum getChannelCode(CamundaOperationHeader header) {
+    return Arrays.stream(ChannelCodeEnum.values())
+        .filter(channelCodeEnum -> header.getGid().startsWith(channelCodeEnum.getInitials()))
+        .findFirst()
+        .orElse(ChannelCodeEnum.PVD);
+  }
+
+  protected Optional<User> getUserOrCreate(CamundaOperationTrade trade) {
+    Optional<User> user = userService.findById(trade.getTrader().get());
+
+    if (user.isEmpty()) {
+      User newUser = userService.create(trade.getTrader().get(), trade.getTraderName());
+      user = Optional.of(newUser);
+    }
+    return user;
+  }
+
+  protected DealingOperation buildNewOperation(
+      DealingOperationEventType eventType,
+      CamundaOperationHeader header,
+      Optional<User> user,
+      Optional<ClientInfo> clientInfo,
+      Integer productId,
+      Date transactionDate,
+      ChannelCodeEnum channelInit) {
+    return DealingOperation.builder()
+        .channelInitials(channelInit.getInitials())
+        .clientInfo(clientInfo.orElse(null))
+        .direction(header.getDirection().get())
+        .eventId(header.getEid())
+        .eventType(eventType)
+        .operationStatus(DealingOperationStatusEnum.VALID_CTP.getName())
+        .operationType(header.getType())
+        .globalId(header.getGid())
+        .motherGlobalId(header.getMgid())
+        .lastModificationDate(transactionDate)
+        .productId(productId)
+        .transactionDate(transactionDate)
+        .user(user.orElse(null))
+        .build();
+  }
+
+  protected DealingOperationContent generateOperationContent(
+      CamundaOperationTrade trade,
+      CamundaOperationHeader header,
+      Optional<MurexStepResponseDTO> murex) {
+
+    return dealingOperationService.generateOperationContent(trade, header, murex);
+  }
+
+  protected void checksIfErrorExceedsSizeLimit(CamundaOperationStatus camundaStatus) {
+    DealingOperationUtils.checksIfErrorExceedsSizeLimit(camundaStatus);
+  }
+
+  protected void verifyFirstStep(
+      CamundaOperationRequestDTO request,
+      CamundaOperationStatus camundaStatus,
+      DealingOperationContent dealingOperationContent,
+      DealingOperation newDealingOperation,
+      List<String> errors) {
+
+    boolean isMurexStep = camundaStatus.getSystem().equals(SystemEnum.MUREX.getSystem());
+    if (isMurexStep) {
+      addMurexStepToOperation(request, newDealingOperation, dealingOperationContent);
+    }
+
+    boolean isOnboardStep = camundaStatus.getSystem().equals(SystemEnum.ONBOARD.getSystem());
+    if (isOnboardStep) {
+      addOnboardingStepToOperation(newDealingOperation, request);
+    }
+
+    boolean isErrorStep = camundaStatus.getLevel().equals(LevelEnum.ERROR.getLevel());
+    if (isErrorStep) {
+      addCamundaErrorToOperation(request, newDealingOperation, dealingOperationContent);
+    }
+
+    validateOperation(request, errors);
+
+    if (!errors.isEmpty()) {
+      addErrorToOperation(dealingOperationContent, errors);
+    }
+  }
+
+  protected void validateOperation(CamundaOperationRequestDTO request, List<String> errors) {}
+
+  protected void addMurexStepToOperation(
+      CamundaOperationRequestDTO requestDTO,
+      DealingOperation dealingOperation,
+      DealingOperationContent dealingOperationContent) {
+    dealingOperationService.addMurexStepToOperation(
+        requestDTO, dealingOperation, dealingOperationContent);
+  }
+
+  protected void addOnboardingStepToOperation(
+      DealingOperation dealingOperation, CamundaOperationRequestDTO requestDTO) {
+    dealingOperationService.addOnboardingStepToOperation(dealingOperation, requestDTO);
+  }
+
+  protected void addCamundaErrorToOperation(
+      CamundaOperationRequestDTO request,
+      DealingOperation dealingOperation,
+      DealingOperationContent dealingOperationContent) {
+    dealingOperationService.addCamundaErrorToOperation(
+        request, dealingOperation, dealingOperationContent);
+  }
+
+  private void addErrorToOperation(
+      DealingOperationContent dealingOperationContent, List<String> errors) {
+    dealingOperationContent.setSystemError(ChannelCodeEnum.PVD.getInitials());
+    dealingOperationContent.setErrorDescription(errors.get(0));
+  }
+
+  protected abstract void generateOperationContentByOperationType(
+      DealingOperation dealingOperation, CamundaOperationRequestDTO request);
+
+  protected void saveCommonOperationContent(DealingOperation dealingOperation) {
+    dealingOperationService.save(dealingOperation);
+    dealingOperationService.saveDealingOperationContent(dealingOperation.getContent());
+  }
+
+  protected abstract void saveCustomOperationContent(DealingOperation dealingOperation);
+
+  protected void saveOperation(DealingOperation dealingOperation) {
+    saveCommonOperationContent(dealingOperation);
+    saveCustomOperationContent(dealingOperation);
+  }
+}
+
+
+
+package br.com.santander.BUS.strategy.addmovement.create;
+
+import br.com.santander.BUS.constant.AddMovementJourney;
+import br.com.santander.BUS.model.DealingOperation;
+import br.com.santander.BUS.model.DealingOperationContentDefinitive;
+import br.com.santander.BUS.model.dto.CamundaOperationRequestDTO;
+import br.com.santander.BUS.service.ClientInfoService;
+import br.com.santander.BUS.service.DealingOperationContentDefinitiveService;
+import br.com.santander.BUS.service.DealingOperationService;
+import br.com.santander.BUS.service.UserService;
+import java.util.List;
+import org.springframework.stereotype.Service;
+
+@Service(AddMovementJourney.CREATE_DEFINITIVE)
+public class AddMovementCreateDefinitiveJourney extends AddMovementCreateBasicJourney {
+
+  private final DealingOperationContentDefinitiveService dealingOperationContentDefinitiveService;
+
+  public AddMovementCreateDefinitiveJourney(
+      ClientInfoService clientInfoService,
+      UserService userService,
+      DealingOperationContentDefinitiveService dealingOperationContentDefinitiveService,
+      DealingOperationService dealingOperationService) {
+    super(clientInfoService, userService, dealingOperationService);
+    this.dealingOperationContentDefinitiveService = dealingOperationContentDefinitiveService;
+  }
+
+  @Override
+  protected void generateOperationContentByOperationType(
+      DealingOperation dealingOperation, CamundaOperationRequestDTO request) {
+    DealingOperationContentDefinitive content =
+        dealingOperationContentDefinitiveService.buildContent(
+            request.getTrade(), request.getHeader());
+    dealingOperation.setContentDefinitive(content);
+  }
+
+  @Override
+  protected void saveCustomOperationContent(DealingOperation dealingOperation) {
+    dealingOperationContentDefinitiveService.save(dealingOperation.getContentDefinitive());
+  }
+
+  @Override
+  protected void validateOperation(CamundaOperationRequestDTO request, List<String> errors) {
+    dealingOperationContentDefinitiveService.validateOperationTax(request.getTrade(), errors);
+  }
+}
+
 
