@@ -1,74 +1,43 @@
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+package br.com.santander.bus.config;
 
-import br.com.santander.BUS.constant.ResponseMessage;
-import br.com.santander.BUS.enums.ChannelCodeEnum;
-import br.com.santander.BUS.enums.DealingOperationStatusEnum;
-import br.com.santander.BUS.enums.operation.status.LevelEnum;
-import br.com.santander.BUS.enums.operation.status.SystemEnum;
-import br.com.santander.BUS.model.*;
-import br.com.santander.BUS.model.dto.CamundaOperationRequestDTO;
-import br.com.santander.BUS.model.dto.MurexStepResponseDTO;
-import br.com.santander.BUS.model.dto.ResponseDTO;
-import br.com.santander.BUS.service.ClientInfoService;
-import br.com.santander.BUS.service.DealingOperationContentDefinitiveService;
-import br.com.santander.BUS.service.DealingOperationService;
-import br.com.santander.BUS.service.UserService;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.web.SecurityFilterChain;
 
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import java.util.Optional;
+@Configuration
+@EnableWebSecurity(debug = false)
+public class SecurityConfig {
+    @Bean
+    @ConditionalOnMissingBean
+    public SecurityFilterChain filterChain(HttpSecurity http)
+            throws Exception {
 
-public class AddMovementCreateBasicJourneyTest {
+        http.authorizeHttpRequests(
+                        authorize ->
+                                authorize
+                                        /* Allow list */
+                                        .requestMatchers(HttpMethod.GET, "/v3/api-docs/**")
+                                        .permitAll()
+                                        .requestMatchers(HttpMethod.GET, "/swagger-ui/**")
+                                        .permitAll()
+                                        .requestMatchers(HttpMethod.GET, "/actuator/**")
+                                        .permitAll()
+                                        // Others
+                                        .anyRequest()
+                                        .permitAll())
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(
+                        session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
 
-  @Mock private ClientInfoService clientInfoService;
-  @Mock private UserService userService;
-  @Mock private DealingOperationService dealingOperationService;
+        return http.build();
 
-  @InjectMocks private AddMovementCreateBasicJourney addMovementCreateBasicJourney;
-
-  @Before
-  public void setUp() {
-    MockitoAnnotations.initMocks(this);
-  }
-
-  @Test
-  public void testExecuteJourney() {
-    CamundaOperationRequestDTO requestBody = createTestRequest();
-    DealingOperationEventType eventType = DealingOperationEventType.CREATE;
-
-    ResponseEntity<ResponseDTO<DealingOperation>> response =
-        addMovementCreateBasicJourney.executeJourney(requestBody, eventType);
-
-    assertEquals(HttpStatus.OK, response.getStatusCode());
-    assertNotNull(response.getBody());
-    assertEquals(ResponseMessage.OPERATION_CREATED, response.getBody().getMessage());
-  }
-
-  @Test
-  public void testGenerateOperation() {
-    CamundaOperationRequestDTO requestBody = createTestRequest();
-    DealingOperationEventType eventType = DealingOperationEventType.CREATE;
-
-    DealingOperation dealingOperation =
-        addMovementCreateBasicJourney.generateOperation(requestBody, eventType);
-
-    assertNotNull(dealingOperation);
-    // Add more assertions based on the expected behavior of generateOperation method
-  }
-
-  // Add more test methods for other functionalities in AddMovementCreateBasicJourney class
-
-  private CamundaOperationRequestDTO createTestRequest() {
-    // Create a sample CamundaOperationRequestDTO for testing
-    return new CamundaOperationRequestDTO();
-  }
+    }
 }
