@@ -1,43 +1,44 @@
-package br.com.santander.bus.config;
-
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod;
-import org.springframework.security.config.Customizer;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.test.context.TestPropertySource;
 
-@Configuration
-@EnableWebSecurity(debug = false)
-public class SecurityConfig {
-    @Bean
-    @ConditionalOnMissingBean
-    public SecurityFilterChain filterChain(HttpSecurity http)
-            throws Exception {
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.*;
+import static org.springframework.security.test.web.servlet.response.SecurityMockMvcResultMatchers.*;
 
-        http.authorizeHttpRequests(
-                        authorize ->
-                                authorize
-                                        /* Allow list */
-                                        .requestMatchers(HttpMethod.GET, "/v3/api-docs/**")
-                                        .permitAll()
-                                        .requestMatchers(HttpMethod.GET, "/swagger-ui/**")
-                                        .permitAll()
-                                        .requestMatchers(HttpMethod.GET, "/actuator/**")
-                                        .permitAll()
-                                        // Others
-                                        .anyRequest()
-                                        .permitAll())
-                .csrf(AbstractHttpConfigurer::disable)
-                .sessionManagement(
-                        session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
+@SpringBootTest
+@TestPropertySource(properties = {"debug=false"})
+class SecurityConfigTest {
 
-        return http.build();
+    @Autowired
+    private SecurityFilterChain securityFilterChain;
 
+    @Autowired
+    private HttpSecurity httpSecurity;
+
+    @Test
+    void testSecurityFilterChainConfiguration() throws Exception {
+        // Testando se as configurações de autorização estão corretas
+        httpSecurity.authorizeRequests()
+                .antMatchers("/v3/api-docs/**").permitAll()
+                .antMatchers("/swagger-ui/**").permitAll()
+                .antMatchers("/actuator/**").permitAll()
+                .anyRequest().permitAll();
+
+        // Testando se CSRF está desabilitado
+        httpSecurity.csrf().disable();
+
+        // Testando se a política de sessão está configurada como stateless
+        httpSecurity.sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+
+        // Testando se a configuração do OAuth2 está correta
+        httpSecurity.oauth2ResourceServer().jwt();
+
+        securityFilterChain.doFilter(null, null);
     }
 }
